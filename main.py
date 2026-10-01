@@ -1,6 +1,7 @@
 import os
 import re
 import requests
+from PIL import Image
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
@@ -15,53 +16,79 @@ DESTINATION = "@LootNecks"
 
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
+def parse_number(s):
+    s = s.lower().replace(',', '').replace('₹','').strip()
+    try:
+        if 'k' in s:
+            return float(s.replace('k','')) * 1000
+        return float(s)
+    except:
+        return 0
+
 def make_clean_caption(original_text):
     if not original_text:
         return "", ""
 
-    # 1. সব লিংক বের করা - amzn.to এবং fkrt.to দুটোই
     links = re.findall(r'https?://[^\s]+', original_text)
-    final_link = ""
+    main_link = ""
+    more_link = ""
     for l in links:
-        if "amzn" in l or "amazon" in l or "fkrt" in l or "flipkart" in l:
-            final_link = l.strip()
+        if "amzn" in l or "amazon" in l:
+            if not main_link: main_link = l.strip()
+            else: more_link = l.strip()
+
+    def add_tag(link):
+        if not link: return ""
+        if 'tag=' in link:
+            return re.sub(r'tag=[^&\s]+', f'tag={AFFILIATE_TAG}', link)
+        sep = '&' if '?' in link else '?'
+        return f"{link}{sep}tag={AFFILIATE_TAG}"
+
+    main_link = add_tag(main_link)
+    more_link = add_tag(more_link)
+
+    # দাম বের করা
+    sale_str = ""; regular_str = ""
+    m = re.search(r'₹\s?([0-9,]+)\s*\|\s*Regular:\s*([0-9,.k]+)', original_text, re.I)
+    if m:
+        sale_str = m.group(1).strip()
+        regular_str = m.group(2).strip()
+    else:
+        m2 = re.search(r'Lowest Price\s*:\s*₹\s?([0-9,]+)', original_text, re.I)
+        if m2: sale_str = m2.group(1).strip()
+
+    # % OFF হিসাব
+    off_text = ""
+    if sale_str and regular_str:
+        s_val = parse_number(sale_str)
+        r_val = parse_number(regular_str)
+        if s_val > 0 and r_val > s_val:
+            off = int(((r_val - s_val) / r_val) * 100)
+            off_text = f"🔥 {off}% OFF"
+
+    # Title
+    lines = [l.strip() for l in original_text.split('\n') if l.strip()]
+    title = "Loot Deal"
+    for l in lines:
+        if not l.startswith('http') and '₹' not in l and 'Regular' not in l and 'Loot' not in l and 'Jaldi' not in l and '@' not in l and len(l) > 10:
+            title = l.replace('**','').strip()
             break
-    if not final_link and links:
-        final_link = links[0]
+    if len(title) > 70: title = title[:70]
 
-    # Affiliate Tag - শুধু Amazon এর জন্য
-    if final_link and ("amzn" in final_link or "amazon" in final_link):
-        if 'tag=' in final_link:
-            final_link = re.sub(r'tag=[^&\s]+', f'tag={AFFILIATE_TAG}', final_link)
-        else:
-            sep = '&' if '?' in final_link else '?'
-            final_link = f"{final_link}{sep}tag={AFFILIATE_TAG}"
-
-    # 2. দাম বের করা - তোমার Screenshot এর মতো
-    # ₹200 | Regular: 955 এই ফরম্যাটটা খুঁজে বের করবে
-    price_line = ""
-    price_match = re.search(r'(₹[\d\.k]+\s*\|\s*Regular:.*)', original_text, re.IGNORECASE)
-    if price_match:
-        price_line = price_match.group(1).strip()
+    # Final Caption - বেশি হাবিজাবি না, শুধু দরকারি টা
+    if regular_str:
+        price_line = f"💰 Loot: ₹{sale_str} | MRP: ₹{regular_str}"
     else:
-        # যদি ওই ফরম্যাট না থাকে, নিজে বানাবে
-        prices = re.findall(r'₹\s?([\d\.k]+)', original_text)
-        if len(prices) >= 2:
-            price_line = f"₹{prices[0]} | Regular: {prices[1]}"
-        elif len(prices) == 1:
-            price_line = f"₹{prices[0]}"
+        price_line = f"💰 Price: ₹{sale_str}"
 
-    # 3. Loot / Jaldi Tag
-    tag = "Loot 🔥"
-    if "jaldi" in original_text.lower():
-        tag = "Jaldi 💥"
+    caption = f"🛍️ {title}\n\n{price_line}"
+    if off_text:
+        caption += f"\n{off_text}"
+    caption += f"\n\n🛒 👉 {main_link}"
+    if more_link:
+        caption += f"\n\n👜 more : {more_link}"
 
-    if price_line:
-        clean_text = f"{tag} {price_line}\n\n{final_link}"
-    else:
-        clean_text = f"{tag}\n\n{final_link}"
-
-    return clean_text, final_link
+    return caption, main_link
 
 @client.on(events.NewMessage)
 async def handler(event):
@@ -69,35 +96,35 @@ async def handler(event):
         chat = await event.get_chat()
         chat_title = getattr(chat, 'title', None)
         if chat_title == SOURCE_NAME:
-            original_text = event.raw_text
-            if not original_text or "https://" not in original_text:
-                return
+            if not event.raw_text or "amzn" not in event.raw_text.lower(): return
 
-            print(f"New post from {SOURCE_NAME}")
-            clean_caption, _ = make_clean_caption(original_text)
+            clean_caption, _ = make_clean_caption(event.raw_text)
 
             if event.message.photo or event.message.document:
                 file_path = await event.message.download_media()
+                # ছবি ছোট করা - 400px
+                try:
+                    with Image.open(file_path) as img:
+                        img.thumbnail((400, 400))
+                        img.save(file_path)
+                except: pass
+
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
                 with open(file_path, 'rb') as f:
-                    files = {'photo': f}
-                    data = {'chat_id': DESTINATION, 'caption': clean_caption}
-                    requests.post(url, data=data, files=files, timeout=30)
+                    requests.post(url, data={"chat_id": DESTINATION, "caption": clean_caption}, files={"photo": f}, timeout=30)
                 os.remove(file_path)
             else:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                payload = {"chat_id": DESTINATION, "text": clean_caption, "disable_web_page_preview": False}
-                requests.post(url, data=payload, timeout=30)
+                requests.post(url, data={"chat_id": DESTINATION, "text": clean_caption, "disable_web_page_preview": True}, timeout=30)
 
     except Exception as e:
         print("Error:", e)
 
 async def main():
+    print("Bot LIVE - Small Image + Emoji Mode...")
     await client.connect()
-    print("Bot Live - Genie Loot Style Format Active...")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
     with client:
         client.loop.run_until_complete(main())
-        
