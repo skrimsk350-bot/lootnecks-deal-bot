@@ -19,65 +19,102 @@ client = TelegramClient(
     API_HASH
 )
 
-def add_affiliate_tag(text, tag):
-    if not text:
-        return text
-    
-    # অ্যামাজন লিংক বা শর্ট লিংকগুলো খুঁজে বের করার জন্য রেগুলার এক্সপ্রেশন
-    # যেমন: amazon.in, amzn.in ইত্যাদি
-    pattern = r'https?://(?:www\.)?(?:amazon\.[a-z\.]+|amzn\.[a-z]{2})/[^\s]+'
-    
-    def replace_url(match):
-        url = match.group(0)
-        # যদি লিংকে ইতিমধ্যে ট্যাগ থাকে, তবে সেটিকে এড়িয়ে যাওয়া বা ঠিক করা
-        if 'tag=' in url:
-            return re.sub(r'tag=[^&]+', f'tag={tag}', url)
+def make_clean_caption(original_text):
+    if not original_text:
+        return original_text
+
+    # 1. Link বের করা
+    link_match = re.findall(r'https?://[^\s]+', original_text)
+    amazon_link = ""
+    for l in link_match:
+        if "amazon" in l or "amzn" in l:
+            amazon_link = l
+            break
+
+    # Affiliate Tag Add করা
+    if amazon_link:
+        if 'tag=' in amazon_link:
+            amazon_link = re.sub(r'tag=[^&]+', f'tag={AFFILIATE_TAG}', amazon_link)
         else:
-            separator = '&' if '?' in url else '?'
-            return f"{url}{separator}tag={tag}"
-            
-    return re.sub(pattern, replace_url, text)
+            sep = '&' if '?' in amazon_link else '?'
+            amazon_link = f"{amazon_link}{sep}tag={AFFILIATE_TAG}"
+
+    # 2. দাম বের করা
+    prices = re.findall(r'₹\s?(\d+)', original_text)
+    sale_price = prices[0] if len(prices) > 0 else ""
+    reg_price = prices[1] if len(prices) > 1 else ""
+
+    # 3. Title - প্রথম 2 লাইন থেকে, Description বাদ
+    lines = original_text.split('\n')
+    # "This outfit is Manufactured..." এই লাইনগুলো বাদ
+    title = lines[0].replace('**', '').strip()
+    if len(title) > 80:
+        title = title[:80]
+
+    # 4. নতুন Clean Caption
+    clean_text = f"""🔥 {title}
+
+💰 Loot Price: ₹{sale_price}"""
+
+    if reg_price:
+        clean_text += f" | Reg: ₹{reg_price}\n"
+    else:
+        clean_text += "\n"
+
+    if amazon_link:
+        clean_text += f"\n👉 Buy Now: {amazon_link}\n"
+
+    clean_text += f"\n⏰ Limited Stock - Jaldi Looto!\n\n@LootNecks"
+
+    return clean_text, amazon_link
 
 @client.on(events.NewMessage)
 async def handler(event):
     try:
         chat = await event.get_chat()
         chat_title = getattr(chat, 'title', None)
-        
+
         if chat_title == SOURCE_NAME:
-            text = event.raw_text
-            if not text:
+            original_text = event.raw_text
+            if not original_text:
                 return
-            
-            print(f"New message received from {SOURCE_NAME}")
-            
-            # মেসেজের ভেতরের অ্যামাজন লিংকগুলোতে অ্যাফিলিয়েট ট্যাগ যুক্ত করা
-            modified_text = add_affiliate_tag(text, AFFILIATE_TAG)
-            
-            # টেলিগ্রাম বট এপিআই দিয়ে টার্গেট চ্যানেলে পোস্ট পাঠানো
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": DESTINATION,
-                "text": modified_text,
-                "disable_web_page_preview": False
-            }
-            
-            response = requests.post(url, data=payload, timeout=30)
-            print("Telegram response:", response.text)
-            
+
+            print(f"New message from {SOURCE_NAME}")
+
+            clean_caption, _ = make_clean_caption(original_text)
+
+            # যদি ছবি থাকে, তাহলে ছবি সহ পাঠাও
+            if event.message.photo or event.message.document:
+                # ফাইল ডাউনলোড করে Bot API দিয়ে পাঠানো
+                file_path = await event.message.download_media()
+
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+                with open(file_path, 'rb') as f:
+                    files = {'photo': f}
+                    data = {'chat_id': DESTINATION, 'caption': clean_caption}
+                    response = requests.post(url, data=data, files=files, timeout=30)
+                os.remove(file_path)
+                print("Photo sent:", response.text)
+            else:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": DESTINATION,
+                    "text": clean_caption,
+                    "disable_web_page_preview": False
+                }
+                response = requests.post(url, data=payload, timeout=30)
+                print("Message sent:", response.text)
+
     except Exception as e:
-        print("Error handling new message:", e)
+        print("Error:", e)
 
 async def main():
-    print("Connecting to Telegram...")
+    print("Connecting...")
     await client.connect()
-
     if not await client.is_user_authorized():
-        print("ERROR: Telegram session is not authorized.")
+        print("ERROR: Session not authorized.")
         return
-
-    print("Connected successfully. Bot is now listening for new posts 24/7 with Affiliate Tag integration...")
-    
+    print("Connected. LootNecks Bot is Live with Clean Format...")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
