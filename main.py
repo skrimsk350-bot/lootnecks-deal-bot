@@ -1,70 +1,125 @@
-import os, re, threading, asyncio, requests
-from flask import Flask
-import deal_bot
-from telethon import events
+import os
+import re
+import requests
+from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 
-MY_TAG = "sahinoorstore-21" # <-- Your Tag Here
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+SESSION = os.environ["TELEGRAM_SESSION"]
+AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "sahinoorstore-21")
 
-app = Flask(__name__)
-@app.route('/')
-def home(): return "Running"
+SOURCE_NAME = "Genie Loot"
+DESTINATION = "@LootNecks"
 
-def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+client = TelegramClient(
+    StringSession(SESSION),
+    API_ID,
+    API_HASH
+)
 
-def get_affiliate_link(short_url):
-    try:
-        r = requests.head(short_url, allow_redirects=True, timeout=10)
-        long_url = r.url
-        m = re.search(r'/dp/([A-Z0-9]{10})', long_url)
-        if m:
-            return f"https://www.amazon.in/dp/{m.group(1)}?tag={MY_TAG}"
-        return long_url.split("?")[0] + f"?tag={MY_TAG}"
-    except:
-        return short_url
+def make_clean_caption(original_text):
+    if not original_text:
+        return ""
 
-async def run_bot():
-    await deal_bot.client.connect()
-    print("Clean English Bot Started")
+    # 1. Link বের করা
+    link_match = re.findall(r'https?://[^\s]+', original_text)
+    amazon_link = ""
+    for l in link_match:
+        if "amazon" in l or "amzn" in l:
+            amazon_link = l
+            break
 
-    @deal_bot.client.on(events.NewMessage(chats=deal_bot.SOURCE_NAME))
-    async def handler(event):
-        msg = event.message
-        text = msg.message or ""
-        webpage = msg.media.webpage if msg.media and hasattr(msg.media, 'webpage') else None
-
-        # Price
-        m = re.search(r'₹\s*(\d+).*?(\d+)', text)
-        offer = m.group(1) if m else ""
-        regular = m.group(2) if m and len(m.groups())>1 else ""
-
-        # Link
-        s = re.search(r'https://amzn\.to/\w+', text)
-        my_link = get_affiliate_link(s.group(0)) if s else ""
-
-        # Product Name (English)
-        title = webpage.title if webpage and hasattr(webpage, 'title') else "Amazon Product"
-        title = title[:80] # small title
-
-        # Discount
-        try: off = int((1-int(offer)/int(regular))*100)
-        except: off = 0
-
-        caption = f"""{title}
-
-💰 Price: ₹{offer} | Regular: ₹{regular}
-🔥 {off}% OFF - Limited Deal!
-
-👉 {my_link}
-"""
-
-        if msg.media and (msg.photo or hasattr(msg.media, 'photo')):
-            await deal_bot.client.send_file(deal_bot.DESTINATION, file=msg.media, caption=caption)
+    # Affiliate Tag Add করা
+    if amazon_link:
+        if 'tag=' in amazon_link:
+            amazon_link = re.sub(r'tag=[^&]+', f'tag={AFFILIATE_TAG}', amazon_link)
         else:
-            await deal_bot.client.send_message(deal_bot.DESTINATION, caption, link_preview=True)
+            sep = '&' if '?' in amazon_link else '?'
+            amazon_link = f"{amazon_link}{sep}tag={AFFILIATE_TAG}"
 
-    await deal_bot.client.run_until_disconnected()
+    # 2. দাম বের করা (বর্তমান দাম এবং আগের দাম)
+    prices = re.findall(r'₹\s?([0-9,]+)', original_text)
+    sale_price = prices[0] if len(prices) > 0 else ""
+    reg_price = prices[1] if len(prices) > 1 else ""
+
+    # 3. ছাড়ের পার্সেন্টেজ (Discount %) বের করা বা হিসাব করা
+    discount_match = re.search(r'(\d+%\s*(?:OFF|off|discount))', original_text, re.IGNORECASE)
+    discount_text = discount_match.group(1) if discount_match else ""
+    
+    if not discount_text and sale_price and reg_price:
+        try:
+            s_val = int(sale_price.replace(',', ''))
+            r_val = int(reg_price.replace(',', ''))
+            if r_val > s_val:
+                discount_pct = int(((r_val - s_val) / r_val) * 100)
+                discount_text = f"{discount_pct}% OFF"
+        except:
+            pass
+
+    # 4. Title বের করা (প্রোডাক্টের নাম)
+    lines = [line.strip() for line in original_text.split('\n') if line.strip()]
+    title = "Loot Deal"
+    for line in lines:
+        if not line.startswith('http') and '₹' not in line and '✨' not in line and 'Loot' not in line and not line.startswith('@'):
+            title = line.replace('**', '').strip()
+            break
+    
+    if len(title) > 80:
+        title = title[:80]
+
+    # 5. আকর্ষণীয় ইমোজি ও ফরম্যাট তৈরি
+    clean_text = f"🛍️ {title}\n\n"
+    clean_text += f"🔥 Deal Price: ₹{sale_price}"
+    
+    if reg_price:
+        clean_text += f" | ❌ MRP: ₹{reg_price}"
+        
+    if discount_text:
+        clean_text += f" ({discount_text})"
+        
+    clean_text += f"\n\n🛒 👉 {amazon_link}"
+
+    return clean_text
+
+@client.on(events.NewMessage)
+async def handler(event):
+    try:
+        chat = await event.get_chat()
+        chat_title = getattr(chat, 'title', None)
+
+        if chat_title == SOURCE_NAME:
+            original_text = event.raw_text
+            if not original_text:
+                return
+
+            print(f"New message from {SOURCE_NAME}")
+
+            clean_caption = make_clean_caption(original_text)
+
+            # টেলিগ্রাম Bot API দিয়ে টেক্সট পাঠানো যাতে ছোট প্রিভিউ কার্ড আসে
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            payload = {
+                "chat_id": DESTINATION,
+                "text": clean_caption,
+                "disable_web_page_preview": False
+            }
+            response = requests.post(url, data=payload, timeout=30)
+            print("Message sent with full emojis and pricing:", response.text)
+
+    except Exception as e:
+        print("Error:", e)
+
+async def main():
+    print("Connecting...")
+    await client.connect()
+    if not await client.is_user_authorized():
+        print("ERROR: Session not authorized.")
+        return
+    print("Connected. LootNecks Pro Bot is Live...")
+    await client.run_until_disconnected()
 
 if __name__ == "__main__":
-    threading.Thread(target=run_flask, daemon=True).start()
-    asyncio.run(run_bot())
+    with client:
+        client.loop.run_until_complete(main())
