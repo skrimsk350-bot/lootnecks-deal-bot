@@ -8,7 +8,7 @@ API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 SESSION = os.environ["TELEGRAM_SESSION"]
-AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "sahinoorstore-21")
+AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "lootnecks-21")
 
 SOURCE_NAME = "Genie Loot"
 DESTINATION = "@LootNecks"
@@ -69,7 +69,7 @@ def make_clean_caption(original_text):
     if len(title) > 80:
         title = title[:80]
 
-    # 5. আকর্ষণীয় ইমোজি ও ফরম্যাট তৈরি
+    # 5. আপনার চাহিদা অনুযায়ী সাজানো চমৎকার ক্যাপশন ও ইমোজি
     clean_text = f"🛍️ {title}\n\n"
     clean_text += f"🔥 Deal Price: ₹{sale_price}"
     
@@ -79,7 +79,7 @@ def make_clean_caption(original_text):
     if discount_text:
         clean_text += f" ({discount_text})"
         
-    clean_text += f"\n\n🛒 👉 {amazon_link}"
+    clean_text += f"\n\n🛒 👉 {amazon_link}\n\n📢 @LootNecks"
 
     return clean_text
 
@@ -98,15 +98,25 @@ async def handler(event):
 
             clean_caption = make_clean_caption(original_text)
 
-            # টেলিগ্রাম Bot API দিয়ে টেক্সট পাঠানো যাতে ছোট প্রিভিউ কার্ড আসে
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            payload = {
-                "chat_id": DESTINATION,
-                "text": clean_caption,
-                "disable_web_page_preview": False
-            }
-            response = requests.post(url, data=payload, timeout=30)
-            print("Message sent with full emojis and pricing:", response.text)
+            # ছবি সহ পাঠানো যাতে টেলিগ্রামের বড় ডেসক্রিপশন প্রিভিউ বক্স আর না আসে
+            if event.message.photo or event.message.document:
+                file_path = await event.message.download_media()
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+                with open(file_path, 'rb') as f:
+                    files = {'photo': f}
+                    data = {'chat_id': DESTINATION, 'caption': clean_caption}
+                    response = requests.post(url, data=data, files=files, timeout=30)
+                os.remove(file_path)
+                print("Photo sent cleanly:", response.text)
+            else:
+                url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                payload = {
+                    "chat_id": DESTINATION,
+                    "text": clean_caption,
+                    "disable_web_page_preview": True  # ফালতু প্রিভিউ কার্ড পুরোপুরি বন্ধ রাখা
+                }
+                response = requests.post(url, data=payload, timeout=30)
+                print("Message sent without preview:", response.text)
 
     except Exception as e:
         print("Error:", e)
@@ -117,7 +127,7 @@ async def main():
     if not await client.is_user_authorized():
         print("ERROR: Session not authorized.")
         return
-    print("Connected. LootNecks Pro Bot is Live...")
+    print("Connected. LootNecks Clean Bot is Live...")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
