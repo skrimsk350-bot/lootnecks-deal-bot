@@ -23,15 +23,18 @@ def make_clean_caption(original_text):
     if not original_text:
         return ""
 
-    # 1. Link বের করা
+    # 1. সব অ্যামাজন লিংক বের করা এবং ট্যাগ যুক্ত করা
     link_match = re.findall(r'https?://[^\s]+', original_text)
     amazon_link = ""
     for l in link_match:
         if "amazon" in l or "amzn" in l:
             amazon_link = l
             break
+    
+    if not amazon_link and link_match:
+        amazon_link = link_match[0]
 
-    # Affiliate Tag Add করা
+    # সব লিংকে নিখুঁতভাবে আপনার ট্যাগ বসানো
     if amazon_link:
         if 'tag=' in amazon_link:
             amazon_link = re.sub(r'tag=[^&]+', f'tag={AFFILIATE_TAG}', amazon_link)
@@ -39,12 +42,12 @@ def make_clean_caption(original_text):
             sep = '&' if '?' in amazon_link else '?'
             amazon_link = f"{amazon_link}{sep}tag={AFFILIATE_TAG}"
 
-    # 2. দাম বের করা (বর্তমান দাম এবং আগের দাম)
+    # 2. দাম নিখুঁতভাবে বের করা (বর্তমান দাম এবং আগের MRP দাম)
     prices = re.findall(r'₹\s?([0-9,]+)', original_text)
     sale_price = prices[0] if len(prices) > 0 else ""
     reg_price = prices[1] if len(prices) > 1 else ""
 
-    # 3. ছাড়ের পার্সেন্টেজ (Discount %) বের করা বা হিসাব করা
+    # 3. ছাড়ের পার্সেন্টেজ (% OFF) বের করা বা হিসাব করা
     discount_match = re.search(r'(\d+%\s*(?:OFF|off|discount))', original_text, re.IGNORECASE)
     discount_text = discount_match.group(1) if discount_match else ""
     
@@ -58,18 +61,21 @@ def make_clean_caption(original_text):
         except:
             pass
 
-    # 4. Title বের করা (প্রোডাক্টের নাম)
+    # 4. আসল প্রোডাক্টের নাম (Title) বের করা ("more" বা ফালতু শব্দ বাদ দিয়ে)
     lines = [line.strip() for line in original_text.split('\n') if line.strip()]
     title = "Loot Deal"
     for line in lines:
-        if not line.startswith('http') and '₹' not in line and '✨' not in line and 'Loot' not in line and not line.startswith('@'):
-            title = line.replace('**', '').strip()
+        # যে লাইনগুলোতে লিংক, দাম বা 'more' আছে সেগুলোকে বাদ দিয়ে আসল নাম খোঁজা
+        if not line.startswith('http') and '₹' not in line and 'more' not in line.lower() and 'apply' not in line.lower() and len(line) > 5:
+            title = line.replace('**', '').replace('Loot :', '').replace('Loot', '').strip()
             break
     
     if len(title) > 80:
         title = title[:80]
+    if not title:
+        title = "Special Loot Deal"
 
-    # 5. আপনার চাহিদা অনুযায়ী সাজানো চমৎকার ক্যাপশন ও ইমোজি
+    # 5. চূড়ান্ত সুন্দর ও গোছানো ফরম্যাট
     clean_text = f"🛍️ {title}\n\n"
     clean_text += f"🔥 Deal Price: ₹{sale_price}"
     
@@ -98,7 +104,7 @@ async def handler(event):
 
             clean_caption = make_clean_caption(original_text)
 
-            # ছবি সহ পাঠানো যাতে টেলিগ্রামের বড় ডেসক্রিপশন প্রিভিউ বক্স আর না আসে
+            # ছবিসহ পোস্ট পাঠানো যাতে ডাবল লিংক বা বড় প্রিভিউ বক্স ঝামেলা না করে
             if event.message.photo or event.message.document:
                 file_path = await event.message.download_media()
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
@@ -107,13 +113,13 @@ async def handler(event):
                     data = {'chat_id': DESTINATION, 'caption': clean_caption}
                     response = requests.post(url, data=data, files=files, timeout=30)
                 os.remove(file_path)
-                print("Photo sent cleanly:", response.text)
+                print("Photo sent perfectly:", response.text)
             else:
                 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
                 payload = {
                     "chat_id": DESTINATION,
                     "text": clean_caption,
-                    "disable_web_page_preview": True  # ফালতু প্রিভিউ কার্ড পুরোপুরি বন্ধ রাখা
+                    "disable_web_page_preview": True
                 }
                 response = requests.post(url, data=payload, timeout=30)
                 print("Message sent without preview:", response.text)
@@ -127,7 +133,7 @@ async def main():
     if not await client.is_user_authorized():
         print("ERROR: Session not authorized.")
         return
-    print("Connected. LootNecks Clean Bot is Live...")
+    print("Connected. LootNecks Perfect Bot is Live...")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
