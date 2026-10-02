@@ -1,36 +1,47 @@
-from flask import Flask
-from threading import Thread
 import os
-from PIL import Image, ImageDraw, ImageFont
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import threading
+import asyncio
+from flask import Flask
 
-# Flask Keep Alive - Railway Crush Fix
-app = Flask('')
+# তোমার আসল Deal Bot File টা import করছি
+import deal_bot
+from telethon import events
+
+app = Flask(__name__)
+
 @app.route('/')
 def home():
-    return "LootNecks Bot is Alive!"
+    return "LootNecks Bot is Alive - Forwarding from Genie Loot!"
 
 def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
-# Telegram Bot Token - Railway Variable থেকে নেবে
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+async def run_telethon_bot():
+    await deal_bot.client.connect()
+    print("Connected to Telegram, Listening Genie Loot...")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hi! LootNecks Bot Ready hai 🔥\nAmazon Link bhejo, main deal image bana dunga.")
+    @deal_bot.client.on(events.NewMessage(chats=deal_bot.SOURCE_NAME))
+    async def handler(event):
+        try:
+            text = event.message.message or event.message.text
+            if not text:
+                return
+            print(f"New deal found: {text[:50]}")
+            # তোমার LootNecks চ্যানেলে পাঠাবে
+            await deal_bot.client.send_message(deal_bot.DESTINATION, text)
+            print("Forwarded to LootNecks!")
+        except Exception as e:
+            print(f"Error: {e}")
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
-    # Yaha tumhara purana image banane ka code rahega
-    await update.message.reply_text(f"Link mila: {url}\nImage bana raha hu...")
+    await deal_bot.client.run_until_disconnected()
 
-def main():
-    Thread(target=run_flask).start()
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-    application.run_polling()
+def start_bot():
+    asyncio.run(run_telethon_bot())
 
 if __name__ == "__main__":
-    main()
+    # 1. Flask আলাদা Thread এ চালাও
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    # 2. Bot Main Thread এ চালাও
+    start_bot()
