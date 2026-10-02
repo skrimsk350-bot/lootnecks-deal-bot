@@ -3,4 +3,6 @@ requests
 pyrogram
 tgcrypto
 telethon
-# updated
+Pillow
+Flask
+python-telegram-bot
