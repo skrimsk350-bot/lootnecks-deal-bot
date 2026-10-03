@@ -15,94 +15,84 @@ DESTINATION = "@LootNecks"
 
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
-def get_final_link(short_url):
-    try:
-        r = requests.head(short_url, allow_redirects=True, timeout=10)
-        long_url = r.url
-        m = re.search(r'/dp/([A-Z0-9]{10})', long_url)
-        if m:
-            return f"https://www.amazon.in/dp/{m.group(1)}/?tag={AFFILIATE_TAG}"
-        return long_url.split("?")[0] + f"?tag={AFFILIATE_TAG}"
-    except:
-        return short_url
+def make_clean_caption(text):
+    if not text: return ""
 
-def make_clean_caption(original_text):
-    if not original_text:
-        return "", ""
-
-    links = re.findall(r'https?://[^\s]+', original_text)
+    # 1. একটাই Amazon লিংক বের করবো
+    links = re.findall(r'https?://[^\s]+', text)
     amazon_link = ""
     for l in links:
-        if "amzn.to" in l or "amazon" in l:
-            amazon_link = l
+        if "amzn" in l or "amazon" in l:
+            amazon_link = l.split('?')[0] #? এর আগের লিংক নেবো
             break
+    if not amazon_link and links:
+        amazon_link = links[0].split('?')[0]
 
-    # FIX 1 & 2: সঠিক Affiliate লিংক
+    # Tag বসানো
     if amazon_link:
-        amazon_link = get_final_link(amazon_link)
-    else:
-        return "", "" # Amazon লিংক না পেলে পোস্ট করবে না
+        amazon_link = f"{amazon_link}?tag={AFFILIATE_TAG}"
 
-    prices = re.findall(r'₹\s?([0-9,]+)', original_text)
-    sale_price = prices[0] if len(prices) > 0 else ""
-    reg_price = prices[1] if len(prices) > 1 else ""
+    # 2. দাম বের করা
+    prices = re.findall(r'₹\s?([0-9,]+)', text)
+    sale_price = prices[0] if len(prices)>0 else ""
+    mrp = prices[1] if len(prices)>1 else ""
 
-    discount_match = re.search(r'(\d+%\s*(?:OFF|off))', original_text, re.IGNORECASE)
-    discount_text = discount_match.group(1) if discount_match else ""
-
-    if not discount_text and sale_price and reg_price:
+    # 3. Discount %
+    discount = ""
+    m = re.search(r'(\d+)\s*%\s*off', text, re.I)
+    if m:
+        discount = f"{m.group(1)}% OFF"
+    elif sale_price and mrp:
         try:
-            s = int(sale_price.replace(',', ''))
-            r_ = int(reg_price.replace(',', ''))
-            if r_ > s:
-                discount_text = f"{int(((r_-s)/r_)*100)}% OFF"
-        except:
-            pass
+            s = int(sale_price.replace(',',''))
+            r = int(mrp.replace(',',''))
+            if r > s:
+                discount = f"{int((r-s)/r*100)}% OFF"
+        except: pass
 
-    lines = [l.strip() for l in original_text.split('\n') if l.strip()]
-    title = "Special Loot Deal"
+    # 4. Title
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    title = "Loot Deal"
     for line in lines:
-        clean = line.replace('**','').strip()
-        if not clean.startswith('http') and '₹' not in clean and len(clean) > 5 and 'http' not in clean.lower():
-            title = clean[:80]
+        if 'http' not in line and '₹' not in line and len(line)>5 and 'Loot' not in line:
+            title = re.sub(r'[*#_]', '', line)[:90]
             break
 
-    # FIX 3: দাম না থাকলে লেখা দেখাবে না
-    clean_text = f"🛍️ {title}\n\n"
+    # 5. Final Clean Format - তোমার পছন্দ মতো
+    caption = f"🛍️ {title}\n\n"
     if sale_price:
-        clean_text += f"🔥 Deal: ₹{sale_price}"
-        if reg_price:
-            clean_text += f" | MRP: ₹{reg_price}"
-        if discount_text:
-            clean_text += f" ({discount_text})"
-        clean_text += "\n\n"
+        caption += f"🔥 Deal Price: ₹{sale_price}\n"
+    if mrp:
+        caption += f"❌ MRP: ₹{mrp}\n"
+    if discount:
+        caption += f"💥 Discount: {discount}\n"
+    caption += f"\n🛒 Buy Now 👉 {amazon_link}\n\n✨ @LootNecks"
 
-    clean_text += f"🛒 👉 {amazon_link}\n\n📢 @LootNecks"
-    return clean_text, amazon_link
+    return caption
 
 @client.on(events.NewMessage)
 async def handler(event):
     try:
         chat = await event.get_chat()
-        if getattr(chat, 'title', None)!= SOURCE_NAME:
-            return
-        if not event.raw_text or "amzn.to" not in event.raw_text and "amazon" not in event.raw_text:
+        if getattr(chat, 'title', '')!= SOURCE_NAME:
             return
 
-        caption, link = make_clean_caption(event.raw_text)
-        if not caption or not link:
-            return
+        text = event.raw_text
+        if not text: return
 
-        print(f"Posting: {caption[:50]}")
-        if event.message.photo or event.message.document:
-            file_path = await event.message.download_media()
+        clean_caption = make_clean_caption(text)
+        print(f"New Deal: {clean_caption[:50]}")
+
+        # ছবি দিয়ে পাঠাবো, তাই বড় Preview আসবে না
+        if event.message.photo:
+            path = await event.message.download_media()
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-            with open(file_path, 'rb') as f:
-                requests.post(url, data={'chat_id': DESTINATION, 'caption': caption}, files={'photo': f}, timeout=30)
-            os.remove(file_path)
+            with open(path, 'rb') as f:
+                requests.post(url, data={'chat_id': DESTINATION, 'caption': clean_caption}, files={'photo': f}, timeout=30)
+            os.remove(path)
         else:
             url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            requests.post(url, data={'chat_id': DESTINATION, 'text': caption, 'disable_web_page_preview': True}, timeout=30)
+            requests.post(url, data={'chat_id': DESTINATION, 'text': clean_caption, 'disable_web_page_preview': True}, timeout=30)
 
     except Exception as e:
         print("Error:", e)
@@ -112,6 +102,5 @@ async def main():
     print("LootNecks Railway Bot Live!")
     await client.run_until_disconnected()
 
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+with client:
+    client.loop.run_until_complete(main())
