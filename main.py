@@ -16,7 +16,8 @@ DESTINATION = "@LootNecks"
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
 def make_clean_caption(text):
-    if not text: return ""
+    if not text:
+        return ""
 
     # 1. Amazon Link
     links = re.findall(r'https?://[^\s]+', text)
@@ -31,24 +32,24 @@ def make_clean_caption(text):
     if amazon_link:
         amazon_link = f"{amazon_link}?tag={AFFILIATE_TAG}"
 
-    # 2. দাম - Genie Loot ফরম্যাট
+    # 2. দাম - Comma সহ
     sale_price = ""
     mrp = ""
 
-    m1 = re.search(r'Loot.*?₹\s?(\d+).*?Regular:\s?(\d+)', text, re.I)
+    # Loot ₹6,119 | Regular: 341 বা Jaldi ₹6,119
+    m1 = re.search(r'Loot.*?₹\s?([\d,]+).*?Regular:\s?([\d,.kK]+)', text, re.I)
     if m1:
         sale_price = m1.group(1)
         mrp = m1.group(2)
     else:
-        prices = re.findall(r'₹\s?(\d+)', text)
+        # শুধু ₹6,119 খুঁজবে
+        prices = re.findall(r'₹\s?([\d,]+)', text)
         if len(prices) >= 1:
             sale_price = prices[0]
-        if len(prices) >= 2:
-            mrp = prices[1]
-        if not mrp:
-            m2 = re.search(r'Regular:\s?(\d+)', text, re.I)
-            if m2:
-                mrp = m2.group(1)
+
+        m2 = re.search(r'Regular:\s?([\d,.kK]+)', text, re.I)
+        if m2:
+            mrp = m2.group(1)
 
     # 3. Discount %
     discount = ""
@@ -57,24 +58,36 @@ def make_clean_caption(text):
         discount = f"{m.group(1)}% OFF"
     elif sale_price and mrp:
         try:
-            s = int(sale_price.replace(',',''))
-            r = int(mrp.replace(',',''))
+            s = int(sale_price.replace(',','').replace('.',''))
+            r_str = mrp.lower().replace(',','').replace('k','000')
+            # 21.5k -> 21500 handle
+            if '.' in r_str:
+                 r = int(float(r_str))
+            else:
+                 r = int(r_str)
             if r > s:
                 discount = f"{int((r-s)/r*100)}% OFF"
-        except: pass
+        except:
+            pass
 
-    # 4. Title - আসল নাম
+    # 4. Title - বাজে লাইন বাদ দিয়ে
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     title = "Loot Deal"
     for l in lines:
-        if 'http' in l: continue
+        if 'http' in l.lower(): continue
         if '₹' in l: continue
         if 'Loot' in l: continue
+        if 'Jaldi' in l: continue
+        if 'Fast' in l: continue
         if 'more :' in l.lower(): continue
         if 'ambhedeal' in l.lower(): continue
         if '.in.net' in l.lower(): continue
-        if len(l) < 10: continue
+        if len(l) < 8: continue
         title = l[:90]
+        break
+
+    # যদি Title না পাওয়া যায়, তাহলে Amazon Link Preview থেকে নেওয়ার চেষ্টা করবে Bot
+    # কিন্তু Caption এ আমরা Title টা পরিষ্কার রাখছি
 
     # 5. Final Format
     caption = f"🛍️ {title}\n\n"
@@ -92,7 +105,6 @@ def make_clean_caption(text):
 async def handler(event):
     try:
         chat = await event.get_chat()
-        # তোমার Source Channel / Bot থেকে মেসেজ এলেই কাজ করবে
         text = event.message.message
         if not text:
             return
@@ -102,13 +114,12 @@ async def handler(event):
 
         final_caption = make_clean_caption(text)
 
-        # যদি ছবি থাকে তাহলে ছবি সহ পাঠাবে
         if event.message.photo or event.message.document:
             await client.send_file(DESTINATION, event.message.media, caption=final_caption)
         else:
             await client.send_message(DESTINATION, final_caption)
 
-        print(f"Posted: {final_caption[:50]}")
+        print(f"Posted: {final_caption[:60]}")
 
     except Exception as e:
         print(f"Error: {e}")
