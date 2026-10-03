@@ -9,67 +9,74 @@ SESSION = os.environ["TELEGRAM_SESSION"]
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "lootnecks-21")
 
 DESTINATION = "@LootNecks"
-# এখানে শুধু যেখান থেকে নিতে চাও সেটার নাম দাও
-ALLOWED_SOURCES = ["GenieLootDeals", "GenieLoot", "genieloot", "genie_loot_deals"]
+ALLOWED_SOURCES = ["GenieLootDeals", "GenieLoot", "genieloot"]
 
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
-def make_clean_caption(text):
-    if not text: return ""
+def make_final_caption(text, preview_title=""):
     links = re.findall(r'https?://[^\s]+', text)
     amazon_link = ""
     for l in links:
-        if "amzn" in l or "amazon" in l:
-            amazon_link = l.split('?')[0]
+        if "amzn" in l.lower() or "amazon" in l.lower():
+            amazon_link = l.split('?')[0].split('&')[0]
             break
-    if not amazon_link and links:
-        amazon_link = links[0].split('?')[0]
-    if amazon_link:
-        amazon_link = f"{amazon_link}?tag={AFFILIATE_TAG}"
+
+    if not amazon_link:
+        return None
+
+    final_link = f"{amazon_link}?tag={AFFILIATE_TAG}"
 
     sale_price = ""
     mrp = ""
-    m1 = re.search(r'Loot.*?₹\s?([\d,]+).*?Regular:\s?([\d,.kK]+)', text, re.I)
+    # Fast ₹6,372 | Regular: 12k
+    m1 = re.search(r'₹\s*([\d,.\s]+(?:lac|lakh|k)?)\s*\|\s*Regular:\s*([\d,.\s]+k?)', text, re.I)
     if m1:
-        sale_price = m1.group(1)
-        mrp = m1.group(2)
+        sale_price = m1.group(1).strip()
+        mrp = m1.group(2).strip()
     else:
-        prices = re.findall(r'₹\s?([\d,]+)', text)
-        if len(prices) >= 1: sale_price = prices[0]
-        m2 = re.search(r'Regular:\s?([\d,.kK]+)', text, re.I)
-        if m2: mrp = m2.group(1)
+        m2 = re.search(r'₹\s*([\d,.\s]+(?:lac|lakh))', text, re.I)
+        if m2:
+            sale_price = m2.group(1).strip()
+        else:
+            m3 = re.findall(r'₹\s*([\d,]+)', text)
+            if m3:
+                sale_price = m3[0]
+        m4 = re.search(r'Regular:\s*([\d,.\s]+k?)', text, re.I)
+        if m4:
+            mrp = m4.group(1).strip()
 
     discount = ""
-    m = re.search(r'(\d+)%\s*off', text, re.I)
-    if m: discount = f"{m.group(1)}% OFF"
-    elif sale_price and mrp:
-        try:
-            s = int(sale_price.replace(',','').replace('.',''))
-            r_str = mrp.lower().replace(',','').replace('k','000')
-            r = int(float(r_str)) if '.' in r_str else int(r_str)
-            if r > s: discount = f"{int((r-s)/r*100)}% OFF"
-        except: pass
+    try:
+        s_str = re.search(r'[\d,.]+', sale_price)
+        r_str = re.search(r'[\d,.]+', mrp)
+        if s_str and r_str:
+            s_val = float(s_str.group().replace(',',''))
+            r_val = float(r_str.group().replace(',',''))
+            if 'lac' in sale_price.lower(): s_val *= 100000
+            if 'k' in mrp.lower() and r_val < 1000: r_val *= 1000
+            if 'k' in sale_price.lower() and s_val < 1000: s_val *= 1000
+            if r_val > s_val and r_val > 0:
+                discount = f"{int((r_val - s_val) / r_val * 100)}% OFF"
+    except:
+        pass
 
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    title = "Loot Deal"
-    for l in lines:
-        if 'http' in l.lower(): continue
-        if '₹' in l: continue
-        if 'Loot' in l: continue
-        if 'Jaldi' in l: continue
-        if 'Fast' in l: continue
-        if 'BIGGEST LOOT' in l: continue
-        if 'more :' in l.lower(): continue
-        if 'ambhedeal' in l.lower(): continue
-        if len(l) < 8: continue
-        title = l[:90]
-        break
+    title = preview_title
+    if not title:
+        m_title = re.search(r'ambhedeal\.in\.net\s*\n(.+)', text, re.I)
+        if m_title:
+            title = m_title.group(1).strip()
+    if not title:
+        title = "Special Loot Deal"
 
     caption = f"🛍️ {title}\n\n"
-    if sale_price: caption += f"🔥 Deal Price: ₹{sale_price}\n"
-    if mrp: caption += f"❌ MRP: ₹{mrp}\n"
-    if discount: caption += f"💥 Discount: {discount}\n"
-    caption += f"\n🛒 Buy Now 👉 {amazon_link}\n\n✨ @LootNecks"
+    if mrp:
+        caption += f"💰 MRP: ₹{mrp}\n"
+    if sale_price:
+        caption += f"🔥 Deal Price: ₹{sale_price}\n"
+    if discount:
+        caption += f"💥 Discount: {discount} 🎉\n"
+    caption += f"\n🛒 Buy Now 👉 {final_link}\n\n✨ @LootNecks | 🎁 Best Loot"
+
     return caption
 
 @client.on(events.NewMessage)
@@ -77,31 +84,42 @@ async def handler(event):
     try:
         chat = await event.get_chat()
         username = getattr(chat, 'username', '') or ''
-        # 1. শুধু Genie Loot থেকে নেবে, অন্য Channel থেকে নেবে না
-        # 2. নিজের Channel এর মেসেজ Ignore করবে
-        if username.lower() == "lootnecks": return
-        if username.lower() not in [s.lower() for s in ALLOWED_SOURCES]:
-            # যদি ID দিয়ে check করতে হয়
-            if str(event.chat_id) not in ALLOWED_SOURCES:
-                # Genie Loot এর নামে Title এ "Genie" থাকলে নেবে
-                if "genie" not in getattr(chat, 'title', '').lower():
-                    return
+        title = getattr(chat, 'title', '') or ''
 
-        text = event.message.message
-        if not text: return
-        if "amazon" not in text.lower() and "amzn" not in text.lower() and "₹" not in text:
+        if username.lower() == "lootnecks": return
+        if "genie" not in title.lower() and username.lower() not in [s.lower() for s in ALLOWED_SOURCES]:
             return
 
-        final_caption = make_clean_caption(text)
+        text = event.message.message or ""
+        if "amzn" not in text.lower() and "amazon" not in text.lower():
+            return
+
+        preview_title = ""
+        try:
+            if event.message.media and hasattr(event.message.media, 'webpage') and event.message.media.webpage:
+                preview_title = event.message.media.webpage.title or ""
+        except:
+            pass
+        if not preview_title:
+            m = re.search(r'ambhedeal\.in\.net\s*\n(.+)', text, re.I)
+            if m:
+                preview_title = m.group(1).strip()
+
+        final_caption = make_final_caption(text, preview_title)
+        if not final_caption:
+            return
+
+        # এখানেই আসল ফিক্স: ছবিতে link_preview=False দেবে না
         if event.message.photo or event.message.document:
             await client.send_file(DESTINATION, event.message.media, caption=final_caption)
         else:
-            await client.send_message(DESTINATION, final_caption)
+            await client.send_message(DESTINATION, final_caption, link_preview=False)
 
-        print(f"Posted from {username}: {final_caption[:60]}")
+        print(f"Posted: {final_caption[:60]}")
+
     except Exception as e:
         print(f"Error: {e}")
 
-print("Bot Started with Source Filter...")
+print("LootNecks Final Bot Started - No Big Preview")
 client.start()
 client.run_until_disconnected()
